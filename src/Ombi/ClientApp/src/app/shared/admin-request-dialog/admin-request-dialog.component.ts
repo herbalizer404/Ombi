@@ -100,6 +100,11 @@ export class AdminRequestDialogComponent implements OnInit {
 		}
 
 		if (this.data.type === RequestType.tvShow) {
+			if (this.data.qualityOnly) {
+				this.sonarrEnabled = true;
+				this.loadSonarrProfiles();
+				return;
+			}
 			this.sonarrEnabled = this.sonarrFacade.isEnabled();
 			if (this.sonarrEnabled) {
 				console.log(this.sonarrFacade.version());
@@ -164,6 +169,19 @@ export class AdminRequestDialogComponent implements OnInit {
 		});
 	}
 
+	private loadSonarrProfiles(): void {
+		this.profilesLoading = true;
+		this.sonarrService.getSelectableQualityProfilesWithoutSettings().subscribe({
+			next: (result) => {
+				this.sonarrProfiles = result;
+				this.profilesLoading = false;
+			},
+			error: () => {
+				this.profilesError = true;
+				this.profilesLoading = false;
+			},
+		});
+	}
 
 	public displayFn(user: IUserDropdown): string {
 		const username = user?.username ? user.username : '';

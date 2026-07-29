@@ -31,6 +31,24 @@ function createComponent(is4k = false) {
 }
 
 describe('AdminRequestDialogComponent quality-only mode', () => {
+  it('loads only safe Sonarr profiles for TV', async () => {
+    const dialogRef = { close: vi.fn() };
+    const identity = { getUsersDropdown: vi.fn().mockReturnValue(of([])) };
+    const sonarr = { getSelectableQualityProfilesWithoutSettings: vi.fn().mockReturnValue(of([{ id: 3, name: 'HD TV' }])) };
+    const fb = { group: vi.fn().mockReturnValue({ value: {}, controls: { username: { valueChanges: of('') } } }) };
+    const facade = { isEnabled: vi.fn(), is4KEnabled: vi.fn() };
+    const component = new AdminRequestDialogComponent(
+      dialogRef as any, { type: RequestType.tvShow, id: 1, is4k: null, qualityOnly: true }, identity as any,
+      sonarr as any, {} as any, fb as any, facade as any, facade as any,
+    );
+
+    await component.ngOnInit();
+
+    expect(component.sonarrProfiles).toEqual([{ id: 3, name: 'HD TV' }]);
+    expect(identity.getUsersDropdown).not.toHaveBeenCalled();
+    expect(sonarr.getSelectableQualityProfilesWithoutSettings).toHaveBeenCalled();
+  });
+
   it('loads only safe standard Radarr profiles', async () => {
     const { component, identity, radarr } = createComponent();
 

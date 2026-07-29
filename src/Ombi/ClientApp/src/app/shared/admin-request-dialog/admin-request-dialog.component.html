@@ -38,7 +38,9 @@
   <!-- Sonarr -->
   <div *ngIf="data.type === RequestType.tvShow && sonarrEnabled"><hr />
   <div>
-    <h3>Sonarr Overrides</h3>
+    <h3 *ngIf="!data.qualityOnly">Sonarr Overrides</h3>
+    <mat-spinner *ngIf="profilesLoading" diameter="32"></mat-spinner>
+    <div *ngIf="profilesError" class="alert alert-warning" role="alert">{{ 'ErrorPages.SomethingWentWrong' | translate }}</div>
     <mat-form-field appearance="outline" floatLabel=auto>
         <mat-label>{{'MediaDetails.QualityProfilesSelect' | translate }}</mat-label>
         <mat-select id="sonarrQualitySelect" formControlName="sonarrPathId">
@@ -46,7 +48,7 @@
         </mat-select>
     </mat-form-field>
   </div>
-  <div >
+  <div *ngIf="!data.qualityOnly">
     <mat-form-field appearance="outline" floatLabel=auto>
         <mat-label>{{'MediaDetails.RootFolderSelect' | translate }}</mat-label>
         <mat-select id="sonarrFolderSelect" formControlName="sonarrFolderId">
@@ -54,7 +56,7 @@
         </mat-select>
     </mat-form-field>
   </div>
-  <div>
+  <div *ngIf="!data.qualityOnly">
     <mat-form-field *ngIf="sonarrLanguageProfiles" appearance="outline" floatLabel=auto>
         <mat-label>{{'MediaDetails.LanguageProfileSelect' | translate }}</mat-label>
         <mat-select id="sonarrLanguageId" formControlName="sonarrLanguageId">
