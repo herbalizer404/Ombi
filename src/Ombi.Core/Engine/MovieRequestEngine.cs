@@ -24,6 +24,8 @@ using System.Threading;
 using Ombi.Core.Services;
 using Ombi.Core.Helpers;
 using Ombi.Notifications.Models;
+using Ombi.Api.External.ExternalApis.Radarr;
+using Ombi.Settings.Settings.Models.External;
 
 namespace Ombi.Core.Engine
 {
@@ -34,7 +36,11 @@ namespace Ombi.Core.Engine
             OmbiUserManager manager, IRepository<RequestLog> rl, ICacheService cache,
             ISettingsService<OmbiSettings> ombiSettings, IRepository<RequestSubscription> sub, IMediaCacheService mediaCacheService,
             IFeatureService featureService,
-            IUserPlayedMovieRepository userPlayedMovieRepository)
+            IUserPlayedMovieRepository userPlayedMovieRepository,
+            IRadarrV3Api radarrApi,
+            ISettingsService<RadarrSettings> radarrSettings,
+            ISettingsService<Radarr4KSettings> radarr4KSettings,
+            IRepository<UserSelectableQualityProfile> selectableProfiles)
             : base(user, requestService, r, manager, cache, ombiSettings, sub)
         {
             MovieApi = movieApi;
@@ -45,6 +51,10 @@ namespace Ombi.Core.Engine
             _mediaCacheService = mediaCacheService;
             _featureService = featureService;
             _userPlayedMovieRepository = userPlayedMovieRepository;
+            _radarrApi = radarrApi;
+            _radarrSettings = radarrSettings;
+            _radarr4KSettings = radarr4KSettings;
+            _selectableProfiles = selectableProfiles;
         }
 
         private IMovieDbApi MovieApi { get; }
@@ -55,6 +65,10 @@ namespace Ombi.Core.Engine
         private readonly IMediaCacheService _mediaCacheService;
         private readonly IFeatureService _featureService;
         protected readonly IUserPlayedMovieRepository _userPlayedMovieRepository;
+        private readonly IRadarrV3Api _radarrApi;
+        private readonly ISettingsService<RadarrSettings> _radarrSettings;
+        private readonly ISettingsService<Radarr4KSettings> _radarr4KSettings;
+        private readonly IRepository<UserSelectableQualityProfile> _selectableProfiles;
 
         /// <summary>
         /// Requests the movie.
@@ -93,18 +107,63 @@ namespace Ombi.Core.Engine
                 };
             }
 
-            if ((model.RootFolderOverride.HasValue || model.QualityPathOverride.HasValue) && !isAdmin)
+            if (model.RootFolderOverride.HasValue && !isAdmin)
             {
                 return new RequestEngineResult
                 {
                     Result = false,
+                    ErrorCode = ErrorCode.NoPermissions,
                     Message = "You do not have the correct permissions!",
-                    ErrorMessage = $"You do not have the correct permissions!"
+                    ErrorMessage = "You do not have the correct permissions!"
+                };
+            }
+
+            var canSelectRadarrProfile = isAdmin
+                || await UserManager.IsInRoleAsync(userDetails, OmbiRoles.SelectRadarrQualityProfile);
+            if (model.QualityPathOverride.HasValue && !canSelectRadarrProfile)
+            {
+                return new RequestEngineResult
+                {
+                    Result = false,
+                    ErrorCode = ErrorCode.NoPermissions,
+                    Message = "You do not have the correct permissions!",
+                    ErrorMessage = "You do not have the correct permissions!"
                 };
             }
 
             var is4kFeatureEnabled = await _featureService.FeatureEnabled(FeatureNames.Movie4KRequests);
             var is4kRequest = is4kFeatureEnabled && model.Is4kRequest;
+
+            if (model.QualityPathOverride.HasValue)
+            {
+                if (model.Is4kRequest && !is4kRequest)
+                {
+                    return InvalidQualityProfile();
+                }
+
+                if (!isAdmin && !await _selectableProfiles.GetAll().AnyAsync(x =>
+                    x.UserId == userDetails.Id &&
+                    x.Application == SelectableQualityProfileApplication.Radarr &&
+                    x.QualityProfileId == model.QualityPathOverride.Value &&
+                    x.Is4K == is4kRequest))
+                {
+                    return InvalidQualityProfile();
+                }
+
+                var settings = is4kRequest
+                    ? await _radarr4KSettings.GetSettingsAsync()
+                    : await _radarrSettings.GetSettingsAsync();
+                if (!settings.Enabled)
+                {
+                    return InvalidQualityProfile();
+                }
+
+                var profiles = await _radarrApi.GetProfiles(settings.ApiKey, settings.FullUri);
+                if (!profiles.Any(x => x.id == model.QualityPathOverride.Value))
+                {
+                    return InvalidQualityProfile();
+                }
+            }
 
             MovieRequests requestModel;
             bool isExisting = false;
@@ -120,6 +179,17 @@ namespace Ombi.Core.Engine
                 else
                 {
                     existingRequest.RequestedDate = DateTime.UtcNow;
+                }
+                if (model.QualityPathOverride.HasValue)
+                {
+                    if (model.Is4kRequest)
+                    {
+                        existingRequest.QualityOverride4K = model.QualityPathOverride.Value;
+                    }
+                    else
+                    {
+                        existingRequest.QualityOverride = model.QualityPathOverride.Value;
+                    }
                 }
                 isExisting = true;
                 requestModel = existingRequest;
@@ -146,7 +216,8 @@ namespace Ombi.Core.Engine
                     LangCode = model.LanguageCode,
                     RequestedByAlias = model.RequestedByAlias,
                     RootPathOverride = model.RootFolderOverride.GetValueOrDefault(),
-                    QualityOverride = model.QualityPathOverride.GetValueOrDefault(),
+                    QualityOverride = model.Is4kRequest ? 0 : model.QualityPathOverride.GetValueOrDefault(),
+                    QualityOverride4K = model.Is4kRequest ? model.QualityPathOverride.GetValueOrDefault() : 0,
                     RequestedDate4k = model.Is4kRequest ? DateTime.UtcNow : DateTime.MinValue,
                     Is4kRequest = model.Is4kRequest,
                     Source = model.Source
@@ -193,6 +264,12 @@ namespace Ombi.Core.Engine
 
             return await AddMovieRequest(requestModel, fullMovieName, model.RequestOnBehalf, isExisting, is4kRequest);
         }
+
+        private static RequestEngineResult InvalidQualityProfile() => new RequestEngineResult
+        {
+            Result = false,
+            ErrorMessage = "The selected Radarr quality profile is not available."
+        };
 
 
         /// <summary>
@@ -408,7 +485,14 @@ namespace Ombi.Core.Engine
                 };
             }
 
-            request.QualityOverride = options.QualityOverride;
+            if (options.Is4K)
+            {
+                request.QualityOverride4K = options.QualityOverride;
+            }
+            else
+            {
+                request.QualityOverride = options.QualityOverride;
+            }
             request.RootPathOverride = options.RootPathOverride;
 
             await MovieRepository.Update(request);
@@ -720,6 +804,7 @@ namespace Ombi.Core.Engine
             results.Overview = request.Overview;
             results.PosterPath = PosterPathHelper.FixPosterPath(request.PosterPath);
             results.QualityOverride = request.QualityOverride;
+            results.QualityOverride4K = request.QualityOverride4K;
             results.RootPathOverride = request.RootPathOverride;
 
             await MovieRepository.Update(results);
